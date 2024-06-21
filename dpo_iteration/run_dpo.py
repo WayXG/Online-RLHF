@@ -25,24 +25,24 @@ class ScriptArguments:
 
     # training parameters
     model_name_or_path: Optional[str] = field(
-        default="HuggingFaceH4/mistral-7b-sft-beta",
+        default="1231czx/2b_sft1", #"/home/wexiong_google_com/wx/sft/RLHF-Reward-Modeling/pair-pm/pm_models/gemma-2b-it_bs128_lr1e-5/checkpoint-3511",
         metadata={"help": "the location of the model name or path"},
     )
     ref_model: Optional[str] = field(
-        default="",
+        default="1231czx/2b_sft1",#"/home/wexiong_google_com/wx/sft/RLHF-Reward-Modeling/pair-pm/pm_models/gemma-2b-it_bs128_lr1e-5/checkpoint-3511",
         metadata={"help": "the location of the SFT model name or path"},
     )
     train_dir: Optional[str] = field(
-        default="./data/uf_split0_responses_K8_reward.json",
+        default="RRLHF/gemma2b_gen_extract_96K_pairs",
         metadata={"help": "the location of the dataset name or path"},
     )
     eval_dir: Optional[str] = field(
-        default="/export/home/hanze/project/vllm-gen/uf_split0_offline_reward.json",  # "/export/home/data/gemma_it_2b_3w_k8_with_pairrm_rewards.json",
+        default="RRLHF/gemma2b_gen_extract_96K_pairs",  # "/export/home/data/gemma_it_2b_3w_k8_with_pairrm_rewards.json",
         metadata={"help": "the location of the evalset name or path"},
     )
-    learning_rate: Optional[float] = field(default=5e-7, metadata={"help": "optimizer learning rate"})
+    learning_rate: Optional[float] = field(default=7e-7, metadata={"help": "optimizer learning rate"})
     lr_scheduler_type: Optional[str] = field(
-        default="constant_with_warmup", metadata={"help": "the lr scheduler type"}
+        default="cosine", metadata={"help": "the lr scheduler type"}
     )
     warmup_steps: Optional[int] = field(default=100, metadata={"help": "the number of warmup steps"})
     weight_decay: Optional[float] = field(default=0.01, metadata={"help": "the weight decay"})
@@ -51,7 +51,7 @@ class ScriptArguments:
     per_device_train_batch_size: Optional[int] = field(default=1, metadata={"help": "train batch size per device"})
     per_device_eval_batch_size: Optional[int] = field(default=1, metadata={"help": "eval batch size per device"})
     gradient_accumulation_steps: Optional[int] = field(
-        default=16, metadata={"help": "the number of gradient accumulation steps"}
+        default=4, metadata={"help": "the number of gradient accumulation steps"}
     )
     gradient_checkpointing: Optional[bool] = field(
         default=True, metadata={"help": "whether to use gradient checkpointing"}
@@ -66,16 +66,16 @@ class ScriptArguments:
 
     max_prompt_length: Optional[int] = field(default=1000, metadata={"help": "the maximum prompt length"})
     max_length: Optional[int] = field(default=2048, metadata={"help": "the maximum sequence length"})
-    max_steps: Optional[int] = field(default=20, metadata={"help": "max number of training steps"})
+    max_steps: Optional[int] = field(default=4000, metadata={"help": "max number of training steps"})
     num_train_epochs: Optional[int] = field(default=2, metadata={"help": "max number of training epochs"})
     logging_steps: Optional[int] = field(default=2, metadata={"help": "the logging frequency"})
-    save_strategy: Optional[str] = field(default="epoch", metadata={"help": "the saving strategy"})
-    save_steps: Optional[int] = field(default=50000, metadata={"help": "the saving frequency"})
+    save_strategy: Optional[str] = field(default="steps", metadata={"help": "the saving strategy"})
+    save_steps: Optional[int] = field(default=50, metadata={"help": "the saving frequency"})
     eval_steps: Optional[int] = field(default=100, metadata={"help": "the evaluation frequency"})
-    run_name: Optional[str] = field(default="dpo_soft", metadata={"help": "the run name"})
+    run_name: Optional[str] = field(default="mdpo_iter1_gemma2b_lr7e7_bz32", metadata={"help": "the run name"})
     loss_type: Optional[str] = field(default="sigmoid", metadata={"help": "the loss type"})
-    output_dir: Optional[str] = field(default="./dpo_soft", metadata={"help": "the output directory"})
-    log_freq: Optional[int] = field(default=1, metadata={"help": "the logging frequency"})
+    output_dir: Optional[str] = field(default="./dpo_iter1", metadata={"help": "the output directory"})
+    log_freq: Optional[int] = field(default=2, metadata={"help": "the logging frequency"})
 
     # instrumentation
     sanity_check: Optional[bool] = field(default=False, metadata={"help": "only train on 1000 samples"})
@@ -106,6 +106,7 @@ class ScriptArguments:
 
 
 def prepare_data(
+    tokenizer,
     data_dir: str = "/home/xiongwei/data/helpful/rm/rm1003.json",
     sanity_check: bool = False,
     cache_dir: str = None,
@@ -122,7 +123,10 @@ def prepare_data(
     max_max: best v.s. second best
     max_min_p: best v.s. worst but we additionally add a length penalty in the reward value
     """
-    ds = load_dataset("json", data_files=data_dir, split="train", field="instances")
+    #ds = load_dataset("json", data_files=data_dir, split="train", field="instances")
+    ds = load_dataset("RRLHF/gemma2b_gen_extract_96K_pairs", split='train')
+    ds = ds.shuffle(seed=42)
+    #ds = ds.select(range(2000))
     print(ds)
 
     pos = []
@@ -131,6 +135,9 @@ def prepare_data(
 
     margin = []
     for sample in ds:
+        chosen = sample['chosen']
+        rejected = sample['rejected']
+        '''
         if choose_type == "random":
             idx0 = 0
             idx1 = 1
@@ -175,6 +182,16 @@ def prepare_data(
                 pos.append(sample["responses"][idx1] + eot_token)
                 neg.append(sample["responses"][idx0] + eot_token)
                 margin.append((-sample["rewards"][idx0] + sample["rewards"][idx1]) * margin_scale)
+        '''
+        prompt = tokenizer.apply_chat_template([chosen[0]], tokenize=False, add_generation_prompt=True)
+        prompt2 = tokenizer.apply_chat_template([rejected[0]], tokenize=False, add_generation_prompt=True)
+        assert prompt == prompt2
+        chosen_str = tokenizer.apply_chat_template(chosen, tokenize=False).replace(prompt, "")
+        rejected_str = tokenizer.apply_chat_template(rejected, tokenize=False).replace(prompt, "")
+        prompts.append(prompt)
+        pos.append(chosen_str)
+        neg.append(rejected_str)
+        margin.append(0.5)
     dataset = Dataset.from_dict({"prompt": prompts, "chosen": pos, "rejected": neg, "margin": margin})
 
     if sanity_check:
@@ -212,6 +229,7 @@ if __name__ == "__main__":
         use_flash_attention_2=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(script_args.model_name_or_path)
+    '''
     if script_args.eos_padding:
         tokenizer.pad_token = tokenizer.eos_token
     else:
@@ -222,7 +240,7 @@ if __name__ == "__main__":
         model_ref.config.pad_token_id = tokenizer.pad_token_id
         model.resize_token_embeddings(len(tokenizer))
         model_ref.resize_token_embeddings(len(tokenizer))
-
+    '''
     def tokenize(sample):
         tokenized_pos = tokenizer(sample["prompt"].replace("<bos>", "") + "\n" + sample["chosen"])
         tokenized_neg = tokenizer(sample["prompt"].replace("<bos>", "") + "\n" + sample["rejected"])
@@ -234,6 +252,7 @@ if __name__ == "__main__":
 
     # 2. Load the Stack-exchange paired dataset
     train_dataset = prepare_data(
+        tokenizer,
         data_dir=script_args.train_dir,
         margin_scale=script_args.margin_scale,
         sanity_check=script_args.sanity_check,
@@ -241,12 +260,13 @@ if __name__ == "__main__":
         eot_token=script_args.eot_token,
         length_penalty=script_args.len_penalty,
     )
-
+    print(train_dataset[0])
     if script_args.max_training_samples > 0:
         train_dataset = train_dataset.select(range(script_args.max_training_samples))
 
     # 3. Load evaluation dataset
     eval_dataset = prepare_data(
+        tokenizer,
         data_dir=script_args.eval_dir,
         sanity_check=True,
         margin_scale=script_args.margin_scale,
@@ -276,6 +296,7 @@ if __name__ == "__main__":
         bf16=True,
         remove_unused_columns=False,
         run_name=script_args.run_name,
+        save_only_model=True
     )
     print(training_args)
 
