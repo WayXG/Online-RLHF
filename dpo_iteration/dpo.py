@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
-
+import copy
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
@@ -21,7 +21,25 @@ from trl import DPOTrainer
 # Define and parse arguments.
 
 
+def get_new(f, old_labels):
 
+    labels = copy.deepcopy(old_labels)
+    #masks = copy.deepcopy(old_masks)
+    start = False
+    for j in range(len(f)):
+        
+        if f[j:j+3] == [106, 1645, 108]:
+            start = True
+        if f[j:j+2] == [107, 108] and start:
+            labels[j] = -100
+            labels[j+1] = -100
+            #masks[j] = 0
+            #masks[j+1] = 0
+            start = False
+        if start:
+            labels[j] = -100
+            #masks[j] = 0
+    return labels
 
 
 
@@ -56,6 +74,7 @@ class PreferenceDataCollatorWithPadding:
             label_pad_token_id  for the prompt tokens.
         """
         batch = {}
+        #print(self.label_pad_token_id)
 
         if not self.is_encoder_decoder:
             chosen_tokens = self.tokenizer(chosen, add_special_tokens=False)
@@ -68,6 +87,7 @@ class PreferenceDataCollatorWithPadding:
             # attention mask these indices to eos_token_id
             if self.mask_prompt:
                 new_attention_mask = [0 for i, p in enumerate(prompt_tokens["attention_mask"])]
+                print("I mask the prompt")
             else:
                 new_attention_mask = [
                     0 if i in eos_indices_prompt else p for i, p in enumerate(prompt_tokens["attention_mask"])
@@ -124,6 +144,11 @@ class PreferenceDataCollatorWithPadding:
             rejected_sequence_tokens["labels"][: len(prompt_tokens["input_ids"])] = [self.label_pad_token_id] * len(
                 prompt_tokens["input_ids"]
             )
+                
+            new_chosen_sequence_labels= get_new(chosen_sequence_tokens['input_ids'], chosen_sequence_tokens['labels'])            
+            new_rej_sequence_labels = get_new(rejected_sequence_tokens['input_ids'], rejected_sequence_tokens['labels'])
+            chosen_sequence_tokens["labels"] = new_chosen_sequence_labels
+            rejected_sequence_tokens["labels"] = new_rej_sequence_labels
 
             for k, toks in {
                 "chosen": chosen_sequence_tokens,
@@ -143,7 +168,7 @@ class PreferenceDataCollatorWithPadding:
         batch["rejected"] = prompt + rejected
         batch["chosen_response_only"] = chosen
         batch["rejected_response_only"] = rejected
-
+        #print(batch)
         return batch
 
     def collate(self, batch):
@@ -376,6 +401,7 @@ class PreferenceTrainer(DPOTrainer):
             policy_rejected_logps,
             policy_chosen_logits,
             policy_rejected_logits,
+            policy_nll_loss,
         ) = self.concatenated_forward(model, batch)
         with torch.no_grad():
             if self.ref_model is None:
@@ -385,11 +411,13 @@ class PreferenceTrainer(DPOTrainer):
                         reference_rejected_logps,
                         _,
                         _,
+                        _,
                     ) = self.concatenated_forward(self.model, batch)
             else:
                 (
                     reference_chosen_logps,
                     reference_rejected_logps,
+                    _,
                     _,
                     _,
                 ) = self.concatenated_forward(self.ref_model, batch)
@@ -411,6 +439,9 @@ class PreferenceTrainer(DPOTrainer):
             margin=margin,
             len_penalty=len_penalty,
         )
+        ##############
+        losses = losses + policy_nll_loss
+        #############
         reward_accuracies = (chosen_rewards > rejected_rewards).float()
 
         prefix = "eval_" if train_eval == "eval" else ""
@@ -422,5 +453,7 @@ class PreferenceTrainer(DPOTrainer):
         metrics[f"{prefix}logps/chosen"] = policy_chosen_logps.detach().cpu().mean()
         metrics[f"{prefix}logits/rejected"] = policy_rejected_logits.detach().cpu().mean()
         metrics[f"{prefix}logits/chosen"] = policy_chosen_logits.detach().cpu().mean()
-
+        ########
+        metrics[f"{prefix}nll_loss"] = policy_nll_loss.detach().cpu().mean()
+        ########
         return losses.mean(), metrics
