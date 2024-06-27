@@ -973,7 +973,7 @@ class DPOTrainer(Trainer):
             label_pad_token_id=self.label_pad_token_id,
         )
 
-        ######################
+        ###################### HARD CODE
         def cross_entropy_loss(logits, labels):
             if not self.is_encoder_decoder:
                 # Shift so that tokens < n predict n
